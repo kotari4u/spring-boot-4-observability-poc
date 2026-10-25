@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
+    <property name="FILE_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [cid=%X{correlationId:-}] %-5level %logger{36} - %msg%n"/>
+
+    <!-- Dedicated appender for the per-request access log emitted by RequestLoggingFilter -->
+    <appender name="ACCESS_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/access.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/access-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Dedicated appender for the ERRORS logger used by GlobalExceptionHandler -->
+    <appender name="ERROR_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/errors.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/errors-%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Route the ACCESS logger to its own file (additivity=false so it is not duplicated to root) -->
+    <logger name="ACCESS" level="INFO" additivity="false">
+        <appender-ref ref="ACCESS_FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+    <!-- Route the ERRORS logger to its own file -->
+    <logger name="ERRORS" level="ERROR" additivity="false">
+        <appender-ref ref="ERROR_FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

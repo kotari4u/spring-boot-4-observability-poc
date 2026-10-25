@@ -1,0 +1,264 @@
+# ---------------------------------------------------------------------------
+# Spring core
+# ---------------------------------------------------------------------------
+spring:
+  application:
+    # Logical identifier for this service.
+    # - What: becomes the default meter tag (via management.metrics.tags.application below)
+    #   and shows up in Spring Boot Admin, discovery clients, and log pattern substitutions.
+    # - Benefit: lets you slice Prometheus/Grafana dashboards by service and distinguish
+    #   this instance from others when metrics/logs are centralized.
+    name: spring4-poc
+  task:
+    scheduling:
+      pool:
+        # Thread-pool size for @Scheduled tasks. Default is 1 — a single blocked job can
+        # delay every other job in the app. Size this to the max number of jobs you expect
+        # to run concurrently.
+        # - Benefit: a slow cleanup job can't starve the fast heartbeat job.
+        size: 4
+      # Prefix for scheduler thread names (visible in logs/stack traces).
+      # - Benefit: at a glance you can tell scheduler threads from http-nio-*, parallel-*,
+      #   or Kafka consumer threads when diagnosing a thread dump.
+      thread-name-prefix: sched-
+      shutdown:
+        # On SIGTERM, wait for in-flight scheduled jobs to finish instead of killing them.
+        # - Benefit: avoids half-completed cleanup/report runs during a rolling deploy.
+        await-termination: true
+        # Hard upper bound on how long we wait for jobs to drain.
+        # - Benefit: still bounded so a hung job cannot block pod termination forever.
+        await-termination-period: 30s
+
+# ---------------------------------------------------------------------------
+# Embedded web server (Tomcat)
+# ---------------------------------------------------------------------------
+server:
+  # TCP port the Tomcat connector binds to.
+  # - What: where HTTP requests are accepted.
+  # - Benefit: explicit over the Spring Boot default (8080) so it is obvious in config
+  #   and easy to change per environment via SPRING_SERVER_PORT.
+  port: 8080
+  tomcat:
+    accesslog:
+      # Disable Tomcat's native access log.
+      # - What: turns off the <HOST>/logs/localhost_access_log.* file Tomcat writes by default.
+      # - Benefit: we already emit a richer, correlation-id-tagged access log from
+      #   RequestLoggingFilter -> logs/access.log, so Tomcat's duplicate log is noise.
+      enabled: false
+
+# ---------------------------------------------------------------------------
+# Spring Boot Actuator — operational endpoints, metrics, observability
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # Comma-separated list of actuator endpoints exposed over HTTP.
+        # - health: liveness/readiness + dependency health (DB, Kafka, etc.)
+        # - info: build/version info
+        # - metrics: list and query individual Micrometer meters
+        # - prometheus: scrape endpoint for Prometheus (text format)
+        # - env: effective configuration + property sources (sensitive — don't expose publicly)
+        # - loggers: inspect & change log levels at runtime without a restart
+        # - httpexchanges: ring buffer of the last N HTTP requests
+        # - mappings: all @RequestMapping routes registered in the app
+        # - retries / retryevents: Resilience4j retry instances + their event stream
+        # - circuitbreakers / circuitbreakerevents: same for circuit breakers
+        # Benefit: a single curl against /actuator gives you ops visibility without extra tooling.
+        include: health,info,metrics,prometheus,env,loggers,httpexchanges,mappings,retries,retryevents,circuitbreakers,circuitbreakerevents
+      # URL prefix for all actuator endpoints (default is /actuator; set explicitly for clarity).
+      # Benefit: lets you move actuator behind a separate ingress/path for internal-only access.
+      base-path: /actuator
+  endpoint:
+    health:
+      # Include component-level details (DB, disk, Kafka, resilience4j, etc.) in /actuator/health.
+      # - What: unmasks the breakdown that is hidden by default for security reasons.
+      # - Benefit: ops can see WHICH subsystem is DOWN, not just that something is.
+      #   Use "when-authorized" in production if the endpoint is externally reachable.
+      show-details: always
+      probes:
+        # Enable Kubernetes-friendly liveness/readiness sub-paths:
+        #   /actuator/health/liveness  and  /actuator/health/readiness
+        # - Benefit: lets k8s probe each lifecycle state independently and avoid rolling
+        #   restarts just because a transient dependency is unhealthy.
+        enabled: true
+  observations:
+    annotations:
+      # Enable @Observed support — any method annotated with @Observed participates in the
+      # Observation API (metrics + traces, consistent naming).
+      # - Benefit: one annotation gives you timings/counters AND trace spans in the same place.
+      enabled: true
+    key-values:
+      # Common key-values attached to every Observation (metric + trace).
+      # - Benefit: every emitted span/metric gets tagged with the service name without
+      #   having to repeat it per instrumentation point.
+      application: ${spring.application.name}
+  metrics:
+    tags:
+      # Common tag added to EVERY Micrometer meter.
+      # - Benefit: when Prometheus scrapes multiple services, each series carries
+      #   application="..." so queries like sum by (application)(...) just work.
+      application: ${spring.application.name}
+    distribution:
+      # Publish Prometheus-native histogram buckets for HTTP server timings.
+      # - What: emits http_server_requests_seconds_bucket{le="..."} series.
+      # - Benefit: lets Prometheus compute percentiles accurately across all pods
+      #   via histogram_quantile(...) — client-side percentiles cannot be aggregated.
+      percentiles-histogram:
+        http.server.requests: true
+      # Micrometer-side pre-computed percentiles emitted as separate gauges.
+      # - Benefit: cheap single-instance percentiles without needing Prometheus queries;
+      #   handy for quick checks via /actuator/metrics/http.server.requests.
+      percentiles:
+        http.server.requests: 0.5, 0.75, 0.9, 0.95, 0.99
+      # Service Level Objective buckets — Prometheus will emit a bucket at each threshold.
+      # - Benefit: gives you ready-made Grafana panels for "% requests under 200ms" etc.
+      slo:
+        http.server.requests: 50ms, 100ms, 200ms, 400ms, 1s, 2s, 5s
+      # Lower bound for histogram bucketing — anything faster collapses into the first bucket.
+      # - Benefit: avoids wasted buckets below realistic request latencies.
+      minimum-expected-value:
+        http.server.requests: 10ms
+      # Upper bound — slower requests all land in +Inf. Keep slightly above worst-case P99.
+      # - Benefit: keeps the histogram compact; too high wastes series cardinality.
+      maximum-expected-value:
+        http.server.requests: 10s
+  prometheus:
+    metrics:
+      export:
+        # Toggle for the Prometheus registry.
+        # - Benefit: explicit so you can disable the scrape endpoint in environments
+        #   that use a different registry (OTel, Datadog, etc.) without removing the dep.
+        enabled: true
+        # How often Micrometer's internal step counters/timers roll over.
+        # - What: controls the window for rate/throughput meters.
+        # - Benefit: 10s matches a typical Prometheus scrape interval, so counts are fresh
+        #   and rate() queries are accurate.
+        step: 10s
+    # Micrometer renames the metric to "http_server_requests_seconds" with histogram buckets.
+
+# ---------------------------------------------------------------------------
+# Resilience4j — retry (and defaults for other decorators)
+# ---------------------------------------------------------------------------
+resilience4j:
+  retry:
+    # Named config templates. Instances below inherit from these via base-config.
+    # - Benefit: define policy ONCE and reuse across many retry instances; keeps YAML DRY.
+    configs:
+      default:
+        # Maximum attempts INCLUDING the first call. 3 = original + 2 retries.
+        # - Benefit: bounded work so a persistently-failing downstream can't amplify load.
+        max-attempts: 3
+        # Base delay before the first retry.
+        # - Benefit: gives a flapping downstream a brief moment to recover without
+        #   hammering it immediately.
+        wait-duration: 200ms
+        # Multiply wait-duration by exponential-backoff-multiplier between attempts.
+        # - Benefit: progressively backs off so repeated failures don't thundering-herd
+        #   a struggling service. Attempt gaps: 200ms, 400ms, 800ms, ...
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        # Only retry on these exception types (and their subclasses).
+        # - Benefit: makes retry intent explicit — only transient-ish errors are retried,
+        #   so a validation failure (IllegalArgumentException) is not amplified by retries.
+        retry-exceptions:
+          - java.lang.IllegalStateException
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+        # Short-circuit list: these exceptions bypass retry entirely and fail fast.
+        # - Benefit: deterministic failures (bad input) surface immediately instead of
+        #   wasting time on retries that will always fail.
+        ignore-exceptions:
+          - java.lang.IllegalArgumentException
+    # Concrete retry instances referenced from code via @Retry(name = "...").
+    instances:
+      flaky:
+        # Inherit everything from the "default" config, then override selectively.
+        # - Benefit: policy per use case without duplicating the whole block.
+        base-config: default
+        max-attempts: 3
+        # Slightly tighter base wait for this instance.
+        # - Benefit: tune per-dependency SLAs (an in-cluster call tolerates less wait
+        #   than a cross-region call).
+        wait-duration: 150ms
+      alwaysFail:
+        # Second instance used to demonstrate retry exhaustion + fallback.
+        # - Benefit: lets you observe the "retry gave up" branch (ERROR event + fallback
+         #   method invocation + resilience4j_retry_calls_total{kind="failed_with_retry"}).
+        base-config: default
+        max-attempts: 3
+        wait-duration: 100ms
+      jobFailureAlert:
+        # Retry policy for the HTTP POST that fires when any @Scheduled method throws.
+        # - Benefit: the alerting endpoint itself can be flaky (503, timeout) and we
+        #   still deliver the notification. Fallback method logs if retries exhaust.
+        base-config: default
+        max-attempts: 3
+        wait-duration: 500ms
+  # Enable Resilience4j metrics exposure. (Also made visible via /actuator/retries and
+  # /actuator/retryevents thanks to the exposure list above.)
+  # - Benefit: retry counts/latencies become queryable in Prometheus just like HTTP metrics.
+  metrics:
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# Application-specific — scheduled job tuning
+# ---------------------------------------------------------------------------
+app:
+  alerts:
+    # Where to POST a JSON failure report when any @Scheduled method throws.
+    # Set to empty string to disable alerts entirely (dev/test).
+    # - Benefit: alerting target is config, not code — easy to swap PagerDuty webhook,
+    #   Opsgenie, Slack ingester, or a local mock without redeploying.
+    job-failure-url: "http://localhost:8080/api/mock/alerts"
+  jobs:
+    heartbeat:
+      # Delay between the END of one run and the START of the next.
+      # - Benefit: fixedDelay (vs fixedRate) guarantees no overlap even if the previous
+      #   run was slow — safer default for most background work.
+      fixed-delay: 10s
+      # Wait this long after startup before the first run.
+      # - Benefit: lets the app finish booting and warm up caches before jobs kick in.
+      initial-delay: 2s
+    cleanup:
+      fixed-delay: 15s
+      initial-delay: 5s
+    report:
+      # Spring cron format is 6-field: second minute hour day-of-month month day-of-week.
+      # "*/30 * * * * *" = every 30 seconds. Set to "-" to disable this job without a
+      # code change. Common production patterns:
+      #   "0 0 * * * *"     — top of every hour
+      #   "0 */15 * * * *"  — every 15 minutes
+      #   "0 0 3 * * *"     — daily at 03:00
+      # - Benefit: scheduling cadence is config, not code — tunable per environment.
+      cron: "*/30 * * * * *"
+
+# ---------------------------------------------------------------------------
+# Logging — levels + console pattern
+# ---------------------------------------------------------------------------
+logging:
+  level:
+    # Baseline log level for everything not explicitly listed.
+    # - Benefit: keep framework noise out of logs while still catching warnings/errors.
+    root: INFO
+    # Our own package — bump to DEBUG when diagnosing locally.
+    # - Benefit: single switch to see detailed app logs without flipping root to DEBUG
+    #   (which would flood the console with framework internals).
+    poc.spring4.samples.spring4_poc: INFO
+    # Named loggers used by RequestLoggingFilter and GlobalExceptionHandler — logback-spring.xml
+    # routes these to dedicated files (logs/access.log and logs/errors.log).
+    # - Benefit: structured per-request + per-error streams that can be shipped
+    #   independently to log aggregators.
+    ACCESS: INFO
+    ERRORS: ERROR
+    # RETRY logger — populated by RetryEventLoggingConfig; one line per retry attempt,
+    # success, or exhaustion. Inherits the console appender from root (no file routing).
+    # - Benefit: diagnose flaky-dependency behavior without digging through actuator events.
+    RETRY: INFO
+  pattern:
+    # Console log line format. %X{correlationId:-} pulls the per-request correlation id
+    # from MDC (populated by RequestLoggingFilter); the ":-" default prevents "null" when
+    # outside a request scope (e.g. startup).
+    # - Benefit: every log line is joinable on a single correlation id, so you can trace
+    #   one request across threads/async hops without a full tracing backend.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [cid=%X{correlationId:-}] %-5level %logger{36} - %msg%n"

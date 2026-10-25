@@ -1,0 +1,55 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.1.2'
+	id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'poc.spring4.samples'
+version = '0.0.1-SNAPSHOT'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(22)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+ext {
+	set('springBootAdminVersion', "4.1.2")
+	set('springCloudVersion', "2025.1.4")
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
+	implementation 'org.springframework.boot:spring-boot-starter-kafka'
+	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	implementation 'io.projectreactor:reactor-core'
+	implementation 'de.codecentric:spring-boot-admin-starter-client'
+	implementation 'de.codecentric:spring-boot-admin-starter-server'
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.0'
+	implementation 'org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j'
+	implementation 'io.github.resilience4j:resilience4j-spring-boot3'
+	implementation 'io.github.resilience4j:resilience4j-reactor'
+	implementation 'io.micrometer:context-propagation'
+	implementation 'org.aspectj:aspectjweaver'
+	implementation 'org.springframework:spring-aspects'
+	runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+	testImplementation 'org.springframework.boot:spring-boot-starter-actuator-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-kafka-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+dependencyManagement {
+	imports {
+		mavenBom "de.codecentric:spring-boot-admin-dependencies:${springBootAdminVersion}"
+		mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+	}
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
